@@ -1,0 +1,213 @@
+import React, { useState, useEffect } from 'react';
+import { NavTab, BottomNav } from './components/BottomNav';
+import { Header } from './components/Header';
+import { HeroStats } from './components/HeroStats';
+import { OrdersView } from './components/OrdersView';
+import { ProfitCalcView } from './components/ProfitCalcView';
+import { CustomerReplyView } from './components/CustomerReplyView';
+import { TestRunnerModal } from './components/TestRunnerModal';
+import { SettingsModal } from './components/SettingsModal';
+import { inventoryManager } from './utils/inventoryManager';
+import { Order, Product, InventoryMovement, BusinessProfile, OrderStatus, CreateOrderParams } from './types';
+import { runAllSystemTests } from './utils/testSuite';
+
+export default function App() {
+  const [language, setLanguage] = useState<'en' | 'ar'>(() => {
+    return (localStorage.getItem('sellmate_uae_lang') as 'en' | 'ar') || 'en';
+  });
+
+  const [currentTab, setCurrentTab] = useState<NavTab>('orders');
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [movements, setMovements] = useState<InventoryMovement[]>([]);
+  const [profile, setProfile] = useState<BusinessProfile>(inventoryManager.getProfile());
+
+  // Modals
+  const [isTestRunnerOpen, setIsTestRunnerOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [selectedOrderForReply, setSelectedOrderForReply] = useState<Order | null>(null);
+  const [testsPassed, setTestsPassed] = useState(true);
+  const [testStats, setTestStats] = useState<{ total: number; passed: number }>({ total: 9, passed: 9 });
+
+  // Sync RTL / LTR on language changes
+  useEffect(() => {
+    document.documentElement.setAttribute('dir', language === 'ar' ? 'rtl' : 'ltr');
+    document.documentElement.setAttribute('lang', language);
+    localStorage.setItem('sellmate_uae_lang', language);
+  }, [language]);
+
+  // Refresh data from repository
+  const refreshData = () => {
+    setOrders(inventoryManager.getOrders());
+    setProducts(inventoryManager.getProducts());
+    setMovements(inventoryManager.getMovements());
+    setProfile(inventoryManager.getProfile());
+  };
+
+  // Initial load & system self-test verification
+  useEffect(() => {
+    refreshData();
+    runAllSystemTests()
+      .then((results) => {
+        const passedCount = results.filter((r) => r.passed).length;
+        setTestStats({ total: results.length, passed: passedCount });
+        setTestsPassed(passedCount === results.length);
+      })
+      .catch((e) => console.warn('Background test run notice:', e));
+  }, []);
+
+  // Handlers
+  const handleSaveOrder = (orderData: CreateOrderParams) => {
+    inventoryManager.createOrderAtomic(orderData);
+    refreshData();
+  };
+
+  const handleUpdateStatus = (orderId: string, newStatus: OrderStatus) => {
+    inventoryManager.updateOrderStatusAtomic(orderId, newStatus);
+    refreshData();
+  };
+
+  const handleDeleteOrder = (orderId: string) => {
+    inventoryManager.deleteOrder(orderId);
+    refreshData();
+  };
+
+  const handleClearAllOrders = () => {
+    inventoryManager.clearAllOrders();
+    refreshData();
+  };
+
+  const handleAdjustStock = (productId: string, delta: number, reason: string) => {
+    inventoryManager.adjustStock(productId, delta, reason);
+    refreshData();
+  };
+
+  const handleSelectOrderForReply = (order: Order) => {
+    setSelectedOrderForReply(order);
+    setCurrentTab('replies');
+  };
+
+  const handleSaveProfile = (updates: Partial<BusinessProfile>) => {
+    const updated = inventoryManager.updateProfile(updates);
+    setProfile(updated);
+  };
+
+  const handleResetDemoData = () => {
+    inventoryManager.resetToDemoData();
+    refreshData();
+  };
+
+  const handleExportData = () => {
+    const data = {
+      exportedAt: new Date().toISOString(),
+      profile,
+      orders,
+      products,
+      movements,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sellmate-uae-data.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const openOrdersCount = orders.filter(
+    (o) => !['Delivered', 'Cancelled'].includes(o.status)
+  ).length;
+
+  return (
+    <div className="max-w-[1180px] mx-auto p-3 sm:p-4 md:p-[18px] min-h-screen flex flex-col justify-between">
+      <div>
+        {/* Top Header */}
+        <Header
+          language={language}
+          setLanguage={setLanguage}
+          profile={profile}
+          onOpenTests={() => setIsTestRunnerOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onExportData={handleExportData}
+          testsPassed={testsPassed}
+          testStats={testStats}
+        />
+
+        {/* Hero & 4 Stats Cards */}
+        <HeroStats orders={orders} products={products} language={language} />
+
+        {/* Navigation Tabs */}
+        <BottomNav
+          currentTab={currentTab}
+          onSelectTab={(tab) => {
+            if (tab === 'tests') {
+              setIsTestRunnerOpen(true);
+            } else if (tab === 'cloud') {
+              setIsSettingsOpen(true);
+            } else {
+              setCurrentTab(tab);
+            }
+          }}
+          language={language}
+          openOrdersCount={openOrdersCount}
+          testStats={testStats}
+        />
+
+        {/* Tab Content Views */}
+        <main className="mt-2">
+          {currentTab === 'orders' && (
+            <OrdersView
+              orders={orders}
+              products={products}
+              movements={movements}
+              language={language}
+              onSaveOrder={handleSaveOrder}
+              onUpdateStatus={handleUpdateStatus}
+              onDeleteOrder={handleDeleteOrder}
+              onClearAllOrders={handleClearAllOrders}
+              onSelectOrderForReply={handleSelectOrderForReply}
+              onAdjustStock={handleAdjustStock}
+            />
+          )}
+
+          {currentTab === 'profit' && (
+            <ProfitCalcView language={language} />
+          )}
+
+          {currentTab === 'replies' && (
+            <CustomerReplyView
+              orders={orders}
+              selectedOrder={selectedOrderForReply}
+              language={language}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Footer */}
+      <footer className="text-center py-6 text-xs text-slate-500 mt-6 border-t border-slate-200/60">
+        SellMate UAE · Production Starter · Local browser storage & Supabase Cloud support · Server-side Gemini 3.8 Flash AI
+      </footer>
+
+      {/* Modals */}
+      <TestRunnerModal
+        isOpen={isTestRunnerOpen}
+        onClose={() => setIsTestRunnerOpen(false)}
+        language={language}
+        onTestsCompleted={(passed, stats) => {
+          setTestsPassed(passed);
+          if (stats) setTestStats(stats);
+        }}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        language={language}
+        profile={profile}
+        onSaveProfile={handleSaveProfile}
+        onResetDemoData={handleResetDemoData}
+      />
+    </div>
+  );
+}

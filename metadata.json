@@ -1,0 +1,6 @@
+{
+  "name": "SellMate UAE - Merchant Companion",
+  "description": "Mobile-first UAE merchant companion for order tracking, atomic inventory management, AED profit calculation, and AI bilingual WhatsApp/Instagram customer replies.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
