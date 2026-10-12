@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { NavTab, BottomNav } from './components/BottomNav';
 import { Header } from './components/Header';
 import { HeroStats } from './components/HeroStats';
@@ -120,6 +121,7 @@ export default function App() {
 
   return (
     <div className="max-w-[1180px] mx-auto p-3 sm:p-4 md:p-[18px] min-h-screen flex flex-col justify-between">
+      <Analytics />
       <div>
         {/* Top Header */}
         <Header
