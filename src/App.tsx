@@ -46,7 +46,9 @@ export default function App() {
 
   // Initial load & system self-test verification
   useEffect(() => {
-    refreshData();
+    inventoryManager.init().then(() => {
+      refreshData();
+    });
     runAllSystemTests()
       .then((results) => {
         const passedCount = results.filter((r) => r.passed).length;
@@ -57,28 +59,28 @@ export default function App() {
   }, []);
 
   // Handlers
-  const handleSaveOrder = (orderData: CreateOrderParams) => {
-    inventoryManager.createOrderAtomic(orderData);
+  const handleSaveOrder = async (orderData: CreateOrderParams) => {
+    await inventoryManager.createOrderAtomic(orderData);
     refreshData();
   };
 
-  const handleUpdateStatus = (orderId: string, newStatus: OrderStatus) => {
-    inventoryManager.updateOrderStatusAtomic(orderId, newStatus);
+  const handleUpdateStatus = async (orderId: string, newStatus: OrderStatus) => {
+    await inventoryManager.updateOrderStatusAtomic(orderId, newStatus);
     refreshData();
   };
 
-  const handleDeleteOrder = (orderId: string) => {
-    inventoryManager.deleteOrder(orderId);
+  const handleDeleteOrder = async (orderId: string) => {
+    await inventoryManager.deleteOrder(orderId);
     refreshData();
   };
 
-  const handleClearAllOrders = () => {
-    inventoryManager.clearAllOrders();
+  const handleClearAllOrders = async () => {
+    await inventoryManager.clearAllOrders();
     refreshData();
   };
 
-  const handleAdjustStock = (productId: string, delta: number, reason: string) => {
-    inventoryManager.adjustStock(productId, delta, reason);
+  const handleAdjustStock = async (productId: string, delta: number, reason: string) => {
+    await inventoryManager.adjustStock(productId, delta, reason);
     refreshData();
   };
 
@@ -87,13 +89,13 @@ export default function App() {
     setCurrentTab('replies');
   };
 
-  const handleSaveProfile = (updates: Partial<BusinessProfile>) => {
-    const updated = inventoryManager.updateProfile(updates);
+  const handleSaveProfile = async (updates: Partial<BusinessProfile>) => {
+    const updated = await inventoryManager.updateProfile(updates);
     setProfile(updated);
   };
 
-  const handleResetDemoData = () => {
-    inventoryManager.resetToDemoData();
+  const handleResetDemoData = async () => {
+    await inventoryManager.resetToDemoData();
     refreshData();
   };
 

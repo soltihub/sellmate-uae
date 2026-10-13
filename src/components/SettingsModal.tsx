@@ -43,10 +43,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Cloud Config State
   const [supabaseUrl, setSupabaseUrl] = useState(
-    localStorage.getItem('sellmate_supabase_url') || ''
+    (import.meta.env.VITE_SUPABASE_URL as string) || 'https://krarnhruludwscihdbbr.supabase.co'
   );
   const [supabaseKey, setSupabaseKey] = useState(
-    localStorage.getItem('sellmate_supabase_key') || ''
+    (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ? '●●●●●●●●●●●●●●●●●●●●' : ''
   );
 
   // SQL Export Modal / Viewer
@@ -79,9 +79,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       default_emirate: defaultEmirate,
       vat_registered: vatRegistered,
     });
-
-    localStorage.setItem('sellmate_supabase_url', supabaseUrl.trim());
-    localStorage.setItem('sellmate_supabase_key', supabaseKey.trim());
 
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 2500);

@@ -10,12 +10,12 @@ interface OrdersViewProps {
   products: Product[];
   movements: InventoryMovement[];
   language: 'en' | 'ar';
-  onSaveOrder: (orderData: CreateOrderParams) => void;
-  onUpdateStatus: (orderId: string, newStatus: OrderStatus) => void;
-  onDeleteOrder: (orderId: string) => void;
-  onClearAllOrders: () => void;
+  onSaveOrder: (orderData: CreateOrderParams) => Promise<void> | void;
+  onUpdateStatus: (orderId: string, newStatus: OrderStatus) => Promise<void> | void;
+  onDeleteOrder: (orderId: string) => Promise<void> | void;
+  onClearAllOrders: () => Promise<void> | void;
   onSelectOrderForReply: (order: Order) => void;
-  onAdjustStock: (productId: string, delta: number, reason: string) => void;
+  onAdjustStock: (productId: string, delta: number, reason: string) => Promise<void> | void;
 }
 
 export const OrdersView: React.FC<OrdersViewProps> = ({
@@ -75,7 +75,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!orderRef.trim() || !productName.trim()) {
@@ -112,7 +112,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     }
 
     try {
-      onSaveOrder({
+      await onSaveOrder({
         ref: orderRef.trim(),
         productName: productName.trim(),
         productSize: productSize.trim(),
@@ -128,7 +128,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         emirate,
       });
 
-      showToast(isAr ? 'تم حفظ الطلب وتحديث المخزون بأمان.' : 'Order saved. Inventory updated safely.');
+      showToast(isAr ? 'تم حفظ الطلب وتحديث المخزون بنجاح.' : 'Order saved. Inventory updated successfully.');
 
       // Prepare next reference
       setOrderRef(generateNextOrderRef([...orders, { ref: orderRef } as any]));
