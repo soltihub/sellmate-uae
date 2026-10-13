@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { NavTab, BottomNav } from './components/BottomNav';
 import { Header } from './components/Header';
 import { HeroStats } from './components/HeroStats';
@@ -247,6 +248,8 @@ export default function App() {
           inventoryManager.init().then(() => refreshData());
         }}
       />
+
+      <SpeedInsights />
     </div>
   );
 }
