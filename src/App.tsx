@@ -7,9 +7,11 @@ import { ProfitCalcView } from './components/ProfitCalcView';
 import { CustomerReplyView } from './components/CustomerReplyView';
 import { TestRunnerModal } from './components/TestRunnerModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AuthModal } from './components/AuthModal';
 import { inventoryManager } from './utils/inventoryManager';
 import { Order, Product, InventoryMovement, BusinessProfile, OrderStatus, CreateOrderParams } from './types';
 import { runAllSystemTests } from './utils/testSuite';
+import { getAuthUser, supabase } from './utils/supabaseClient';
 
 export default function App() {
   const [language, setLanguage] = useState<'en' | 'ar'>(() => {
@@ -21,10 +23,12 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<InventoryMovement[]>([]);
   const [profile, setProfile] = useState<BusinessProfile>(inventoryManager.getProfile());
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
   // Modals
   const [isTestRunnerOpen, setIsTestRunnerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [selectedOrderForReply, setSelectedOrderForReply] = useState<Order | null>(null);
   const [testsPassed, setTestsPassed] = useState(true);
   const [testStats, setTestStats] = useState<{ total: number; passed: number }>({ total: 9, passed: 9 });
@@ -46,9 +50,21 @@ export default function App() {
 
   // Initial load & system self-test verification
   useEffect(() => {
+    getAuthUser().then((user) => {
+      setCurrentUser(user);
+    });
+
+    const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user || null);
+      inventoryManager.init().then(() => {
+        refreshData();
+      });
+    });
+
     inventoryManager.init().then(() => {
       refreshData();
     });
+
     runAllSystemTests()
       .then((results) => {
         const passedCount = results.filter((r) => r.passed).length;
@@ -56,6 +72,10 @@ export default function App() {
         setTestsPassed(passedCount === results.length);
       })
       .catch((e) => console.warn('Background test run notice:', e));
+
+    return () => {
+      authSub.subscription.unsubscribe();
+    };
   }, []);
 
   // Handlers
@@ -128,6 +148,8 @@ export default function App() {
           language={language}
           setLanguage={setLanguage}
           profile={profile}
+          currentUser={currentUser}
+          onOpenAuth={() => setIsAuthOpen(true)}
           onOpenTests={() => setIsTestRunnerOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onExportData={handleExportData}
@@ -209,6 +231,21 @@ export default function App() {
         profile={profile}
         onSaveProfile={handleSaveProfile}
         onResetDemoData={handleResetDemoData}
+      />
+
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        language={language}
+        currentUser={currentUser}
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          inventoryManager.init().then(() => refreshData());
+        }}
+        onSignOut={() => {
+          setCurrentUser(null);
+          inventoryManager.init().then(() => refreshData());
+        }}
       />
     </div>
   );

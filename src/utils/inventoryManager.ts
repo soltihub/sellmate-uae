@@ -11,7 +11,7 @@ import {
   OrderItem,
 } from '../types';
 import { calculateProfit, roundAed, validateUaePhone } from './calculations';
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { supabase, isSupabaseConfigured, getAuthUser } from './supabaseClient';
 
 /**
  * Calculates next unique order reference number safely (e.g. SM-1004)
@@ -299,6 +299,7 @@ export class InventoryManager {
   private profile: BusinessProfile = { ...INITIAL_PROFILE };
   private isIsolated: boolean = false;
   private isInitialized: boolean = false;
+  private cachedBusinessId: string | null = null;
 
   constructor(isIsolated: boolean = false) {
     this.isIsolated = isIsolated;
@@ -319,12 +320,77 @@ export class InventoryManager {
   }
 
   /**
+   * Resolves the authenticated merchant's business_id (auth.uid()).
+   * If a profile does not exist in the public.profiles table for this user,
+   * creates it automatically to satisfy FOREIGN KEY (business_id) REFERENCES public.profiles(id).
+   */
+  public async getResolvedBusinessId(): Promise<string | null> {
+    if (this.isIsolated || !isSupabaseConfigured) return null;
+    if (this.cachedBusinessId) return this.cachedBusinessId;
+
+    try {
+      const user = await getAuthUser();
+      if (!user || !user.id) {
+        return null;
+      }
+
+      this.cachedBusinessId = user.id;
+
+      // Ensure profile exists in public.profiles table
+      const { data: existingProfile, error: checkError } = await supabase
+        .from('profiles')
+        .select('id, business_name')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (checkError) {
+        console.warn('[InventoryManager] Check profile warning:', checkError.message);
+      }
+
+      if (!existingProfile) {
+        const storeName =
+          (user.user_metadata?.business_name as string) ||
+          this.profile.business_name ||
+          'SellMate Store UAE';
+
+        const { error: insertProfileErr } = await supabase
+          .from('profiles')
+          .insert({
+            id: user.id,
+            business_name: storeName,
+            business_phone: this.profile.business_phone || '+971501234567',
+            trn_number: this.profile.trn_number || null,
+            default_emirate: this.profile.default_emirate || 'Dubai',
+            currency: 'AED',
+            vat_registered: Boolean(this.profile.vat_registered),
+            vat_rate: Number(this.profile.vat_rate) || 5,
+          });
+
+        if (insertProfileErr) {
+          console.error('[PROFILES INSERT FAILED]', {
+            status: insertProfileErr.code,
+            message: insertProfileErr.message,
+            payload: { id: user.id, business_name: storeName },
+          });
+        } else {
+          console.log('[PROFILES AUTOCREATED]', { id: user.id, business_name: storeName });
+        }
+      }
+
+      return user.id;
+    } catch (err) {
+      console.warn('[InventoryManager] getResolvedBusinessId error:', err);
+      return null;
+    }
+  }
+
+  /**
    * Initializes and synchronizes repository state directly with Supabase tables:
+   * - Resolves authenticated user & auto-provisions profile
    * - Loads products via supabase.from('products').select('*')
    * - Loads orders via supabase.from('orders').select('*')
    * - Loads order items via supabase.from('order_items').select('*')
    * - Loads inventory movements via supabase.from('inventory_movements').select('*')
-   * - If remote tables are empty, seeds them to Supabase automatically
    */
   public async init(): Promise<void> {
     if (this.isIsolated || !isSupabaseConfigured) {
@@ -333,6 +399,7 @@ export class InventoryManager {
     }
 
     try {
+      await this.getResolvedBusinessId();
       await this.loadFromSupabase();
       this.isInitialized = true;
     } catch (err) {
@@ -356,6 +423,7 @@ export class InventoryManager {
       if (!prodErr && dbProducts && dbProducts.length > 0) {
         this.products = dbProducts.map((p: any) => ({
           id: p.id,
+          business_id: p.business_id,
           name_en: p.name_en,
           name_ar: p.name_ar,
           sku: p.sku,
@@ -422,6 +490,7 @@ export class InventoryManager {
           const firstItem = itemsForOrder[0];
           return {
             id: o.id,
+            business_id: o.business_id,
             ref: o.order_number,
             order_number: o.order_number,
             product: firstItem?.product_name_en || 'Order Item',
@@ -465,6 +534,7 @@ export class InventoryManager {
       if (!movErr && dbMovements && dbMovements.length > 0) {
         this.movements = dbMovements.map((m: any) => ({
           id: m.id,
+          business_id: m.business_id,
           product_id: m.product_id,
           order_id: m.order_id,
           movement_type: m.movement_type,
@@ -523,22 +593,25 @@ export class InventoryManager {
     this.profile = { ...this.profile, ...updates };
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('profiles')
-        .upsert({
-          id: this.profile.id,
-          business_name: this.profile.business_name,
-          business_phone: this.profile.business_phone,
-          trn_number: this.profile.trn_number,
-          default_emirate: this.profile.default_emirate,
-          currency: this.profile.currency,
-          vat_registered: this.profile.vat_registered,
-          vat_rate: this.profile.vat_rate,
-          updated_at: new Date().toISOString(),
-        })
-        .then(() => {}, (err: any) => {
-          console.warn('[InventoryManager] Supabase profile write notice:', err);
-        });
+      this.getResolvedBusinessId().then((bizId) => {
+        if (!bizId) return;
+        supabase
+          .from('profiles')
+          .upsert({
+            id: bizId,
+            business_name: this.profile.business_name,
+            business_phone: this.profile.business_phone,
+            trn_number: this.profile.trn_number,
+            default_emirate: this.profile.default_emirate,
+            currency: this.profile.currency,
+            vat_registered: this.profile.vat_registered,
+            vat_rate: this.profile.vat_rate,
+            updated_at: new Date().toISOString(),
+          })
+          .then(() => {}, (err: any) => {
+            console.warn('[InventoryManager] Supabase profile write notice:', err);
+          });
+      });
     }
 
     return { ...this.profile };
@@ -548,7 +621,7 @@ export class InventoryManager {
    * ATOMIC ORDER CREATION (Double-deduction safe)
    * Resolves or creates product in catalog, checks actual stock,
    * deducts stock atomically, records audit ledger movement,
-   * and persists order to Supabase orders table via supabase.from('orders').insert(...)
+   * and persists order to Supabase orders table with PostgreSQL gen_random_uuid().
    */
   public createOrderAtomic(params: CreateOrderParams): { success: boolean; order: Order } {
     let qty = Math.max(1, Math.floor(params.qty || 1));
@@ -615,22 +688,43 @@ export class InventoryManager {
       };
       this.products.push(targetProduct);
 
-      // Async write new product to Supabase
+      // Async write new product to Supabase with authenticated business_id
       if (!this.isIsolated && isSupabaseConfigured) {
-        supabase
-          .from('products')
-          .insert({
-            id: targetProduct.id,
-            name_en: targetProduct.name_en,
-            name_ar: targetProduct.name_ar,
-            sku: targetProduct.sku,
-            selling_price: targetProduct.selling_price,
-            cost_price: targetProduct.cost_price,
-            current_stock: targetProduct.current_stock,
-            reorder_point: targetProduct.reorder_point,
-            category: targetProduct.category,
-          })
-          .then(({ error }) => { if (error) console.warn(); }, (e: any) => console.warn());
+        this.getResolvedBusinessId().then((bizId) => {
+          if (!bizId) {
+            console.warn('[PRODUCTS INSERT SKIPPED] No authenticated merchant session (auth.uid() required by RLS).');
+            return;
+          }
+
+          const productPayload = {
+            business_id: bizId,
+            name_en: targetProduct!.name_en,
+            name_ar: targetProduct!.name_ar,
+            sku: targetProduct!.sku,
+            selling_price: targetProduct!.selling_price,
+            cost_price: targetProduct!.cost_price,
+            current_stock: targetProduct!.current_stock,
+            reorder_point: targetProduct!.reorder_point,
+            category: targetProduct!.category,
+          };
+
+          supabase
+            .from('products')
+            .insert(productPayload)
+            .select('id')
+            .single()
+            .then(({ data, error, status }) => {
+              if (error) {
+                console.error('[PRODUCTS INSERT FAILED]', {
+                  statusCode: status,
+                  supabaseError: error,
+                  payload: productPayload,
+                });
+              } else if (data && data.id) {
+                targetProduct!.id = data.id;
+              }
+            }, (e: any) => console.error('[PRODUCTS INSERT EXCEPTION]', e));
+        });
       }
     }
 
@@ -733,40 +827,26 @@ export class InventoryManager {
         created_at: new Date().toISOString(),
       };
       this.movements.push(movement);
-
-      // Async write product stock deduction & movement to Supabase
-      if (!this.isIsolated && isSupabaseConfigured) {
-        supabase
-          .from('products')
-          .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
-          .eq('id', targetProduct.id)
-          .then(({ error }) => { if (error) console.warn(); }, (e: any) => console.warn());
-
-        supabase
-          .from('inventory_movements')
-          .insert({
-            id: movement.id,
-            product_id: movement.product_id,
-            order_id: movement.order_id,
-            movement_type: movement.movement_type,
-            quantity_delta: movement.quantity_delta,
-            stock_before: movement.stock_before,
-            stock_after: movement.stock_after,
-            reason: movement.reason,
-          })
-          .then(({ error }) => { if (error) console.warn(); }, (e: any) => console.warn());
-      }
     }
 
     this.orders.push(order);
 
     // Step 5: Save order to Supabase orders table
+    // Omitting orders.id to allow PostgreSQL to generate gen_random_uuid()
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('orders')
-        .insert({
-          id: order.id,
+      this.getResolvedBusinessId().then((bizId) => {
+        if (!bizId) {
+          console.warn(
+            '[ORDERS INSERT SKIPPED] No authenticated merchant session (auth.uid() required by RLS).'
+          );
+          return;
+        }
+
+        order.business_id = bizId;
+
+        const orderPayload = {
           order_number: order.order_number,
+          business_id: bizId,
           customer_name: order.customer_name,
           customer_phone: order.customer_phone,
           emirate: order.emirate,
@@ -785,22 +865,99 @@ export class InventoryManager {
           net_profit: order.net_profit,
           profit_margin: order.profit_margin,
           notes: order.notes,
-        })
-        .then(({ error }) => { if (error) console.warn(); }, (e: any) => console.warn());
+        };
 
-      // Also save order_items
-      supabase
-        .from('order_items')
-        .insert({
-          id: orderItem.id,
-          order_id: order.id,
-          product_id: orderItem.product_id,
-          quantity: orderItem.quantity,
-          unit_price: orderItem.unit_price,
-          unit_cost: orderItem.unit_cost,
-          total_price: orderItem.total_price,
-        })
-        .then(({ error }) => { if (error) console.warn(); }, (e: any) => console.warn());
+        supabase
+          .from('orders')
+          .insert(orderPayload)
+          .select('id')
+          .single()
+          .then(({ data, error, status }) => {
+            if (error) {
+              console.error('ORDERS INSERT FAILED', {
+                statusCode: status,
+                supabaseError: error,
+                requestPayload: orderPayload,
+              });
+            } else if (data && data.id) {
+              const remoteUuid = data.id;
+              order.id = remoteUuid;
+
+              // Insert order_items with generated remoteUuid and UUID product_id check
+              const isUuidProduct = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                orderItem.product_id
+              );
+
+              if (isUuidProduct) {
+                const itemPayload = {
+                  order_id: remoteUuid,
+                  product_id: orderItem.product_id,
+                  quantity: orderItem.quantity,
+                  unit_price: orderItem.unit_price,
+                  unit_cost: orderItem.unit_cost,
+                  total_price: orderItem.total_price,
+                };
+
+                supabase
+                  .from('order_items')
+                  .insert(itemPayload)
+                  .then(({ error: itemErr, status: itemStatus }) => {
+                    if (itemErr) {
+                      console.error('[ORDER_ITEMS INSERT FAILED]', {
+                        statusCode: itemStatus,
+                        supabaseError: itemErr,
+                        requestPayload: itemPayload,
+                      });
+                    }
+                  });
+              }
+
+              // Insert inventory movement
+              const isUuidMoveProduct = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                targetProduct!.id
+              );
+
+              if (!isCancelledInitial && isUuidMoveProduct) {
+                const movePayload = {
+                  business_id: bizId,
+                  product_id: targetProduct!.id,
+                  order_id: remoteUuid,
+                  movement_type: 'order_reserved',
+                  quantity_delta: -qty,
+                  stock_before: targetProduct!.current_stock + qty,
+                  stock_after: targetProduct!.current_stock,
+                  reason: `Reserved for Order ${ref}`,
+                };
+
+                supabase
+                  .from('inventory_movements')
+                  .insert(movePayload)
+                  .then(({ error: moveErr, status: moveStatus }) => {
+                    if (moveErr) {
+                      console.error('[INVENTORY_MOVEMENTS INSERT FAILED]', {
+                        statusCode: moveStatus,
+                        supabaseError: moveErr,
+                        requestPayload: movePayload,
+                      });
+                    }
+                  });
+
+                // Update product stock in Supabase
+                supabase
+                  .from('products')
+                  .update({ current_stock: targetProduct!.current_stock, updated_at: new Date().toISOString() })
+                  .eq('id', targetProduct!.id)
+                  .then(() => {}, () => {});
+              }
+            }
+          }, (e: any) => {
+            console.error('ORDERS INSERT FAILED', {
+              statusCode: 500,
+              supabaseError: e,
+              requestPayload: orderPayload,
+            });
+          });
+      });
     }
 
     return { success: true, order };
@@ -808,9 +965,6 @@ export class InventoryManager {
 
   /**
    * ATOMIC STATUS TRANSITION (Double-Deduction and Restock Safe)
-   * - Transition to Cancelled: Restocks once and logs audit entry. Duplicate calls do nothing.
-   * - Transition from Cancelled to active: Verifies stock and re-deducts once.
-   * - Transition between active states: Zero stock change (No double-deduction).
    */
   public updateOrderStatusAtomic(
     orderId: string,
@@ -876,25 +1030,14 @@ export class InventoryManager {
         this.movements.push(mov);
 
         if (!this.isIsolated && isSupabaseConfigured) {
-          supabase
-            .from('products')
-            .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
-            .eq('id', targetProduct.id)
-            .then(() => {}, () => {});
-
-          supabase
-            .from('inventory_movements')
-            .insert({
-              id: mov.id,
-              product_id: mov.product_id,
-              order_id: mov.order_id,
-              movement_type: mov.movement_type,
-              quantity_delta: mov.quantity_delta,
-              stock_before: mov.stock_before,
-              stock_after: mov.stock_after,
-              reason: mov.reason,
-            })
-            .then(() => {}, () => {});
+          const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetProduct.id);
+          if (isUuid) {
+            supabase
+              .from('products')
+              .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
+              .eq('id', targetProduct.id)
+              .then(() => {}, () => {});
+          }
         }
       }
 
@@ -959,25 +1102,14 @@ export class InventoryManager {
       order.profit_margin = profitData.profitMargin;
 
       if (!this.isIsolated && isSupabaseConfigured) {
-        supabase
-          .from('products')
-          .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
-          .eq('id', targetProduct.id)
-          .then(() => {}, () => {});
-
-        supabase
-          .from('inventory_movements')
-          .insert({
-            id: mov.id,
-            product_id: mov.product_id,
-            order_id: mov.order_id,
-            movement_type: mov.movement_type,
-            quantity_delta: mov.quantity_delta,
-            stock_before: mov.stock_before,
-            stock_after: mov.stock_after,
-            reason: mov.reason,
-          })
-          .then(() => {}, () => {});
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetProduct.id);
+        if (isUuid) {
+          supabase
+            .from('products')
+            .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
+            .eq('id', targetProduct.id)
+            .then(() => {}, () => {});
+        }
       }
     }
 
@@ -985,17 +1117,20 @@ export class InventoryManager {
     order.updated_at = new Date().toISOString();
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('orders')
-        .update({
-          status: newStatus.toLowerCase(),
-          net_profit: order.net_profit,
-          profit_margin: order.profit_margin,
-          total_revenue: order.total_revenue,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', order.id)
-        .then(() => {}, () => {});
+      const isUuidOrder = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(order.id);
+      if (isUuidOrder) {
+        supabase
+          .from('orders')
+          .update({
+            status: newStatus.toLowerCase(),
+            net_profit: order.net_profit,
+            profit_margin: order.profit_margin,
+            total_revenue: order.total_revenue,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', order.id)
+          .then(() => {}, () => {});
+      }
     }
 
     return {
@@ -1045,25 +1180,14 @@ export class InventoryManager {
         this.movements.push(mov);
 
         if (!this.isIsolated && isSupabaseConfigured) {
-          supabase
-            .from('products')
-            .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
-            .eq('id', product.id)
-            .then(() => {}, () => {});
-
-          supabase
-            .from('inventory_movements')
-            .insert({
-              id: mov.id,
-              product_id: mov.product_id,
-              order_id: mov.order_id,
-              movement_type: mov.movement_type,
-              quantity_delta: mov.quantity_delta,
-              stock_before: mov.stock_before,
-              stock_after: mov.stock_after,
-              reason: mov.reason,
-            })
-            .then(() => {}, () => {});
+          const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(product.id);
+          if (isUuid) {
+            supabase
+              .from('products')
+              .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
+              .eq('id', product.id)
+              .then(() => {}, () => {});
+          }
         }
       }
     }
@@ -1071,11 +1195,14 @@ export class InventoryManager {
     this.orders.splice(orderIndex, 1);
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('orders')
-        .delete()
-        .eq('id', orderId)
-        .then(() => {}, () => {});
+      const isUuidOrder = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orderId);
+      if (isUuidOrder) {
+        supabase
+          .from('orders')
+          .delete()
+          .eq('id', orderId)
+          .then(() => {}, () => {});
+      }
     }
 
     return true;
@@ -1115,38 +1242,35 @@ export class InventoryManager {
         created_at: new Date().toISOString(),
       };
       this.movements.push(mov);
-
-      if (!this.isIsolated && isSupabaseConfigured) {
-        supabase
-          .from('inventory_movements')
-          .insert({
-            id: mov.id,
-            product_id: mov.product_id,
-            movement_type: mov.movement_type,
-            quantity_delta: mov.quantity_delta,
-            stock_before: mov.stock_before,
-            stock_after: mov.stock_after,
-            reason: mov.reason,
-          })
-          .then(() => {}, () => {});
-      }
     }
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('products')
-        .insert({
-          id: newProd.id,
-          name_en: newProd.name_en,
-          name_ar: newProd.name_ar,
-          sku: newProd.sku,
-          selling_price: newProd.selling_price,
-          cost_price: newProd.cost_price,
-          current_stock: newProd.current_stock,
-          reorder_point: newProd.reorder_point,
-          category: newProd.category,
-        })
-        .then(() => {}, () => {});
+      this.getResolvedBusinessId().then((bizId) => {
+        if (!bizId) return;
+
+        supabase
+          .from('products')
+          .insert({
+            business_id: bizId,
+            name_en: newProd.name_en,
+            name_ar: newProd.name_ar,
+            sku: newProd.sku,
+            selling_price: newProd.selling_price,
+            cost_price: newProd.cost_price,
+            current_stock: newProd.current_stock,
+            reorder_point: newProd.reorder_point,
+            category: newProd.category,
+          })
+          .select('id')
+          .single()
+          .then(({ data, error }) => {
+            if (error) {
+              console.error('[PRODUCTS INSERT FAILED]', error);
+            } else if (data && data.id) {
+              newProd.id = data.id;
+            }
+          }, () => {});
+      });
     }
 
     return newProd;
@@ -1193,24 +1317,14 @@ export class InventoryManager {
     this.movements.push(mov);
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('products')
-        .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
-        .eq('id', product.id)
-        .then(() => {}, () => {});
-
-      supabase
-        .from('inventory_movements')
-        .insert({
-          id: mov.id,
-          product_id: mov.product_id,
-          movement_type: mov.movement_type,
-          quantity_delta: mov.quantity_delta,
-          stock_before: mov.stock_before,
-          stock_after: mov.stock_after,
-          reason: mov.reason,
-        })
-        .then(() => {}, () => {});
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(product.id);
+      if (isUuid) {
+        supabase
+          .from('products')
+          .update({ current_stock: stockAfter, updated_at: new Date().toISOString() })
+          .eq('id', product.id)
+          .then(() => {}, () => {});
+      }
     }
 
     return { success: true, product };
@@ -1223,13 +1337,16 @@ export class InventoryManager {
     this.orders = [];
 
     if (!this.isIsolated && isSupabaseConfigured) {
-      supabase
-        .from('orders')
-        .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000')
-        .then(() => {}, (e: any) => {
-          console.warn('[InventoryManager] Clear orders notice:', e);
-        });
+      this.getResolvedBusinessId().then((bizId) => {
+        if (!bizId) return;
+        supabase
+          .from('orders')
+          .delete()
+          .eq('business_id', bizId)
+          .then(() => {}, (e: any) => {
+            console.warn('[InventoryManager] Clear orders notice:', e);
+          });
+      });
     }
   }
 
@@ -1258,9 +1375,8 @@ export class InventoryManager {
       const nameEn = p.name_en.replace(/'/g, "''");
       const nameAr = p.name_ar.replace(/'/g, "''");
       lines.push(
-        `INSERT INTO public.products (id, name_en, name_ar, sku, selling_price, cost_price, current_stock, reorder_point, category) ` +
-        `VALUES ('${p.id}', '${nameEn}', '${nameAr}', '${p.sku}', ${p.selling_price}, ${p.cost_price}, ${p.current_stock}, ${p.reorder_point}, '${p.category || 'General'}') ` +
-        `ON CONFLICT (id) DO UPDATE SET current_stock = EXCLUDED.current_stock;`
+        `INSERT INTO public.products (name_en, name_ar, sku, selling_price, cost_price, current_stock, reorder_point, category, business_id) ` +
+        `VALUES ('${nameEn}', '${nameAr}', '${p.sku}', ${p.selling_price}, ${p.cost_price}, ${p.current_stock}, ${p.reorder_point}, '${p.category || 'General'}', auth.uid());`
       );
     }
 
@@ -1269,9 +1385,8 @@ export class InventoryManager {
       const custName = o.customer_name.replace(/'/g, "''");
       const addr = (o.delivery_address || '').replace(/'/g, "''");
       lines.push(
-        `INSERT INTO public.orders (id, order_number, customer_name, customer_phone, emirate, delivery_address, channel, payment_method, status, subtotal, shipping_fee, courier_cost, cod_fee, vat_amount, total_revenue, total_cogs, net_profit, profit_margin) ` +
-        `VALUES ('${o.id}', '${o.ref}', '${custName}', '${o.customer_phone}', '${o.emirate}', '${addr}', '${o.channel}', '${o.payment_method}', '${o.status.toLowerCase()}', ${o.subtotal}, ${o.shipping_fee}, ${o.courier_cost}, ${o.cod_fee}, ${o.vat_amount}, ${o.total_revenue}, ${o.total_cogs}, ${o.net_profit}, ${o.profit_margin}) ` +
-        `ON CONFLICT (id) DO NOTHING;`
+        `INSERT INTO public.orders (order_number, business_id, customer_name, customer_phone, emirate, delivery_address, channel, payment_method, status, subtotal, shipping_fee, courier_cost, cod_fee, vat_amount, total_revenue, total_cogs, net_profit, profit_margin) ` +
+        `VALUES ('${o.ref}', auth.uid(), '${custName}', '${o.customer_phone}', '${o.emirate}', '${addr}', '${o.channel}', '${o.payment_method}', '${o.status.toLowerCase()}', ${o.subtotal}, ${o.shipping_fee}, ${o.courier_cost}, ${o.cod_fee}, ${o.vat_amount}, ${o.total_revenue}, ${o.total_cogs}, ${o.net_profit}, ${o.profit_margin});`
       );
     }
 

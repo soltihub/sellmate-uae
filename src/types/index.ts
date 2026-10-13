@@ -24,6 +24,7 @@ export type OrderChannel = 'WhatsApp' | 'Instagram' | 'TikTok' | 'Store / Direct
 
 export interface Product {
   id: string;
+  business_id?: string;
   name_en: string;
   name_ar: string;
   sku: string;
@@ -52,6 +53,7 @@ export interface OrderItem {
 
 export interface Order {
   id: string;
+  business_id?: string;
   ref: string; // starter code order reference (e.g. SM-1001)
   order_number: string;
   product: string;
@@ -95,6 +97,7 @@ export type MovementType =
 
 export interface InventoryMovement {
   id: string;
+  business_id?: string;
   product_id: string;
   product_name_en?: string;
   product_name_ar?: string;

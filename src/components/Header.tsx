@@ -7,6 +7,8 @@ interface HeaderProps {
   language: 'en' | 'ar';
   setLanguage: (lang: 'en' | 'ar') => void;
   profile: BusinessProfile;
+  currentUser?: any;
+  onOpenAuth?: () => void;
   onOpenTests: () => void;
   onOpenSettings: () => void;
   onExportData: () => void;
@@ -18,6 +20,8 @@ export const Header: React.FC<HeaderProps> = ({
   language,
   setLanguage,
   profile,
+  currentUser,
+  onOpenAuth,
   onOpenTests,
   onOpenSettings,
   onExportData,
@@ -55,6 +59,25 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Header action buttons */}
       <div className="flex items-center gap-2 flex-wrap">
+        {/* Merchant Account Auth button */}
+        {onOpenAuth && (
+          <button
+            onClick={onOpenAuth}
+            className={`px-2.5 py-1.5 rounded-[11px] text-xs font-semibold border flex items-center gap-1.5 transition-colors cursor-pointer ${
+              currentUser
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100'
+            }`}
+            title={currentUser ? `Logged in: ${currentUser.email}` : 'Sign in to sync with Supabase'}
+          >
+            <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+            <span>
+              {currentUser
+                ? (language === 'ar' ? 'متصل' : 'Connected')
+                : (language === 'ar' ? 'تسجيل دخول التاجر' : 'Merchant Sign In')}
+            </span>
+          </button>
+        )}
         {/* Test Suite badge button */}
         <button
           onClick={onOpenTests}
